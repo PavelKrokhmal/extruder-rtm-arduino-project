@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <heater1.h>
 #include "GyverPID.h"
 
 class ImitHeatObj {
@@ -39,11 +38,7 @@ class ImitHeatObj {
       delayArray[DELAY_AMOUNT - 1] = valueSpeed;
 
       // Прибавляем скорость (интегрируем)
-      value += delayArray[0]; //valueSpeed
-    }
-
-    String getSerialData() {
-      return "imitHeatObj1/setTemperature/" + String(value);
+      this->value += delayArray[0]; //valueSpeed
     }
 
   private:
@@ -52,24 +47,31 @@ class ImitHeatObj {
     float COEF; 
     float ENV_T; 
     float valueSpeed;
-    float signalSpeed;
+    float signalSpeed = 0;
     bool firstFlag = false;
     float *delayArray;
 };
 
 
 ImitHeatObj *imitHeatObj1;
-
-// Heater1* heater1;
+ImitHeatObj *imitHeatObj2;
 
 GyverPID regulator1(4.2, 0.6, 0);
+GyverPID regulator2(4.2, 0.6, 0);
 
 void setup() {
-  imitHeatObj1 = new ImitHeatObj(24.0, 10, 0.1, 0.1);
   Serial.begin(9600);
-  regulator1.setDirection(NORMAL); // направление регулирования (NORMAL/REVERSE). ПО УМОЛЧАНИЮ СТОИТ NORMAL
-  regulator1.setLimits(0, 255);    // пределы (ставим для 8 битного ШИМ). ПО УМОЛЧАНИЮ СТОЯТ 0 И 255
-  regulator1.setpoint = 160;
+
+  imitHeatObj1 = new ImitHeatObj(24.0, 10, 0.1, 0.1);
+  imitHeatObj2 = new ImitHeatObj(24.0, 5, 0.1, 0.1);
+  
+  regulator1.setDirection(NORMAL);
+  regulator1.setLimits(0, 255);
+  regulator1.setpoint = 150;
+
+  regulator2.setDirection(NORMAL);
+  regulator2.setLimits(0, 255);
+  regulator2.setpoint = 150;
 }
 
 String strData = "";
@@ -82,24 +84,21 @@ String getTypePayloadWrapper1(String &type, String &payload)
   return result;
 }
 
-#define DT 100
-
-String type1 = String("heater1/setCurrentTemperature");
-
 bool regulator1_active = false;
+bool regulator2_active = false;
 
-void regulator1_setParams(float point, float Kp, float Ki, float Kd) {
-  regulator1.setpoint = point;
-  regulator1.Kp = Kp;
-  regulator1.Ki = Ki;
-  regulator1.Kd = Kd;
+void regulator_setParams(GyverPID* regulator, float point, float Kp, float Ki, float Kd) {
+  regulator->setpoint = point;
+  regulator->Kp = Kp;
+  regulator->Ki = Ki;
+  regulator->Kd = Kd;
 }
 
 void loop() {
   static uint32_t tmr;
   static uint32_t tmr1;
 
-  if (millis() - tmr >= DT) {
+  if (millis() - tmr >= 100) {
     tmr = millis();
 
     regulator1.input = imitHeatObj1->value;
@@ -114,14 +113,29 @@ void loop() {
       imitHeatObj1->calc(0);
     }
 
+    regulator2.input = imitHeatObj2->value;
+    
+    if (regulator2.integral < 0) {
+      regulator2.integral = 0;
+    }
 
+    if (regulator2_active) {
+      imitHeatObj2->calc(regulator2.getResult());
+    } else {
+      imitHeatObj2->calc(0);
+    }
   }
 
-  // To SERIAL
+  // To SERIAL PORT
   if (millis() - tmr1 >= 1000) {
     tmr1 = millis();
     Serial.println("PIDRegulator1/setSignal/" + String(regulator1.output));
-    Serial.println(imitHeatObj1->getSerialData());
+    Serial.println("imitHeatObj1/setTemperature/" + String(imitHeatObj1->value));
+    Serial.println("PIDRegulator2/setSignal/" + String(regulator2.output));
+    Serial.println("imitHeatObj2/setTemperature/" + String(imitHeatObj2->value));
+    Serial.println("sensors/setTemperature1/" + String(imitHeatObj2->value - 5));
+    Serial.println("sensors/setLevel1/" + String(60));
+    Serial.println("sensors/setThickness1/" + String(2.75));
   }
 
   while (Serial.available() > 0) {           
@@ -141,9 +155,7 @@ void loop() {
       String action = strData.substring(addressDelimiter + 1, actionDelimiter);
       String values = strData.substring(actionDelimiter + 1);
 
-      if (address == "PIDRegulator1") {
-        if (action == "setParams") {
-
+      if (address == "PIDRegulator1" && action == "setParams") {
           int activeDelimiter = values.indexOf(";");
           int pointDelimiter = values.indexOf(";", activeDelimiter + 1);
           int KpDelimiter = values.indexOf(";", pointDelimiter + 1);
@@ -156,17 +168,31 @@ void loop() {
           float Kd = values.substring(KiDelimiter + 1).toFloat();
           
           regulator1_active = active;
-          regulator1_setParams(point, Kp, Ki, Kd);
+          regulator_setParams(&regulator1, point, Kp, Ki, Kd);
 
           Serial.println("PIDRegulator1/setParams/OK");
-        }
+      }
+
+       if (address == "PIDRegulator2" && action == "setParams") {
+
+          int activeDelimiter = values.indexOf(";");
+          int pointDelimiter = values.indexOf(";", activeDelimiter + 1);
+          int KpDelimiter = values.indexOf(";", pointDelimiter + 1);
+          int KiDelimiter = values.indexOf(";", KpDelimiter + 1);
+          
+          bool active = (bool)values.substring(0, activeDelimiter).toInt();
+          float point = values.substring(activeDelimiter + 1, pointDelimiter).toFloat();
+          float Kp = values.substring(pointDelimiter + 1, KpDelimiter).toFloat();
+          float Ki = values.substring(KpDelimiter + 1, KiDelimiter).toFloat();
+          float Kd = values.substring(KiDelimiter + 1).toFloat();
+          
+          regulator2_active = active;
+          regulator_setParams(&regulator2, point, Kp, Ki, Kd);
+
+          Serial.println("PIDRegulator2/setParams/OK");
       }
     }
     strData = ""; 
     recievedFlag = false;                  
   }
 }
-
-
-
-
